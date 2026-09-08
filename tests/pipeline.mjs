@@ -6,7 +6,7 @@ const page=await browser.newPage({viewport:{width:1440,height:1000},acceptDownlo
 const errors=[],requests=[];page.on('pageerror',e=>errors.push(e.message));page.on('request',r=>requests.push(r.url()));
 const waitReady=()=>expect(page.locator('button.primary')).toBeEnabled({timeout:60000});
 const generate=async()=>{await waitReady();await page.locator('button.primary').click();await expect(page.getByAltText('Generated jewellery try-on')).toBeVisible({timeout:60000});};
-const pixels=()=>page.locator('canvas').evaluate(c=>Array.from(c.getContext('2d').getImageData(0,0,c.width,c.height).data));
+const pixels=async()=>{await page.evaluate(()=>new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve))));return page.locator('canvas').evaluate(c=>Array.from(c.getContext('2d').getImageData(0,0,c.width,c.height).data));};
 const results=[];const pass=(name,data={})=>{results.push({name,...data});console.log('PASS',name,JSON.stringify(data));};
 try{
  await page.goto('http://localhost:3002/',{waitUntil:'networkidle'});
