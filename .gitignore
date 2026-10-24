@@ -39,3 +39,10 @@ next-env.d.ts
 /test-results/
 /tests/fixtures/
 *.tsbuildinfo
+/.venv-local/
+/.local-models/
+/local-runtime/jobs/
+/local-runtime/__pycache__/
+
+/dist-vercel/
+__pycache__/

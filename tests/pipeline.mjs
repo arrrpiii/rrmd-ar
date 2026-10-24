@@ -9,7 +9,7 @@ const generate=async()=>{await waitReady();await page.locator('button.primary').
 const pixels=async()=>{await page.evaluate(()=>new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve))));return page.locator('canvas').evaluate(c=>Array.from(c.getContext('2d').getImageData(0,0,c.width,c.height).data));};
 const results=[];const pass=(name,data={})=>{results.push({name,...data});console.log('PASS',name,JSON.stringify(data));};
 try{
- await page.goto('http://localhost:3002/',{waitUntil:'networkidle'});
+ await page.goto('http://127.0.0.1:3002/',{waitUntil:'networkidle'});
  await expect(page.locator('button.primary')).toBeDisabled();
  await page.getByLabel('Upload portrait').setInputFiles('tests/fixtures/portrait.jpg');
  await expect(page.getByText('Face detected',{exact:true})).toBeVisible({timeout:60000});pass('Actual pretrained face detection');
@@ -20,7 +20,7 @@ try{
   const after=await pixels();await page.getByRole('button',{name:'Show original',exact:true}).click();const before=await pixels();assert.equal(before.length,after.length);
   let changed=0;for(let i=0;i<before.length;i+=4)if(Math.abs(before[i]-after[i])+Math.abs(before[i+1]-after[i+1])+Math.abs(before[i+2]-after[i+2])>12)changed++;
   assert.ok(changed>100,'Jewellery must actually change the output pixels');assert.ok(changed<before.length/4*.4,'Photo must remain intact outside jewellery');
-  await page.getByRole('button',{name:'Show try-on',exact:true}).click();pass('Rhino import, render and original comparison: '+file,{changedPixels:changed});
+  await page.getByRole('button',{name:'Show placement',exact:true}).click();pass('Rhino import, render and original comparison: '+file,{changedPixels:changed});
  }
  await page.getByLabel('Try-on type').selectOption('pendant');await expect(page.getByRole('link',{name:'Download PNG'})).toHaveCount(0);await generate();await expect(page.locator('.anchor')).toHaveCount(1);pass('Pendant mode and stale export invalidation');
  await page.getByLabel('Size',{exact:true}).fill('8');await expect(page.getByRole('link',{name:'Download PNG'})).toHaveCount(0);await generate();
@@ -42,6 +42,6 @@ try{
  await page.getByLabel('Upload portrait').setInputFiles('tests/fixtures/portrait.jpg');await expect(page.getByText('Face detected',{exact:true})).toBeVisible({timeout:60000});await page.getByLabel('Upload jewellery model').setInputFiles('../RDLR851.3dm');await waitReady();await page.getByLabel('Try-on type').selectOption('earrings');await generate();await page.screenshot({path:'test-results/desktop.png',fullPage:true});
  await page.setViewportSize({width:390,height:844});await page.screenshot({path:'test-results/mobile.png',fullPage:true});assert.ok(await page.evaluate(()=>document.documentElement.scrollWidth<=window.innerWidth));pass('Mobile layout: no horizontal overflow');
  assert.deepEqual(errors,[]);pass('No uncaught browser errors');
- const external=requests.filter(x=>!x.startsWith('http://localhost:3002')&&!x.startsWith('blob:')&&!x.startsWith('data:'));assert.deepEqual(external,[]);pass('No third-party requests during processing');
+ const external=requests.filter(x=>!x.startsWith('http://127.0.0.1:3002')&&!x.startsWith('http://127.0.0.1:8765')&&!x.startsWith('blob:')&&!x.startsWith('data:'));assert.deepEqual(external,[]);pass('No third-party requests during processing');
  await fs.writeFile('test-results/report.json',JSON.stringify(results,null,2));
 }finally{await browser.close();}

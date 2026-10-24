@@ -1,16 +1,6 @@
 'use client';
 import { useEffect, useRef, useState, useCallback } from 'react';
-import {
-  Upload,
-  ImagePlus,
-  Box,
-  Download,
-  Move,
-  RotateCcw,
-  Check,
-  LoaderCircle,
-  ShieldCheck,
-} from 'lucide-react';
+import { ImagePlus, Box, Download, RotateCcw } from 'lucide-react';
 import {
   defaults,
   loadModel,
@@ -19,7 +9,16 @@ import {
   type Settings,
   type Point,
 } from '@/lib/tryon/engine';
-import { detectFace, suggestPoints } from '@/lib/tryon/face';
+import { CameraCapture } from '@/components/tryon/camera-capture';
+import { suggestPoints } from '@/lib/tryon/face';
+import { detectJewelleryLandmarks } from '@/lib/tryon/landmarks';
+import {
+  isLocalPage,
+  localStatus,
+  createLocalJob,
+  pollLocalJob,
+  cancelLocalJob,
+} from '@/lib/tryon/local';
 
 type Loaded = { name: string; meshes: number; triangles: number };
 export default function Home() {
@@ -32,18 +31,48 @@ export default function Home() {
     [settings, setSettings] = useState<Settings>({ ...defaults }),
     [busy, setBusy] = useState(''),
     [error, setError] = useState(''),
-    [notice, setNotice] = useState(''),
-    [faceStatus, setFaceStatus] = useState(''),
+    [_notice, setNotice] = useState(''),
+    [_faceStatus, setFaceStatus] = useState(''),
     [generated, setGenerated] = useState(false),
     [result, setResult] = useState(''),
     [before, setBefore] = useState(false),
     [selected, setSelected] = useState(0),
-    [ready, setReady] = useState(false);
+    [ready, setReady] = useState(false),
+    [localReady, setLocalReady] = useState(false),
+    [localMessage, setLocalMessage] = useState('Checking editor…'),
+    [natural, setNatural] = useState(false),
+    [jobId, setJobId] = useState(''),
+    [cameraOpen, setCameraOpen] = useState(false);
   const resultRef = useRef('');
   const clearResult = useCallback(() => {
     if (resultRef.current) URL.revokeObjectURL(resultRef.current);
     resultRef.current = '';
     setResult('');
+    setNatural(false);
+  }, []);
+  async function connectLocal() {
+    try {
+      const status = await localStatus();
+      setLocalReady(status.model_ready);
+      setLocalMessage(
+        status.model_ready
+          ? 'FLUX.2 Klein · ready'
+          : 'The image editor is not ready yet.',
+      );
+    } catch {
+      setLocalReady(false);
+      setLocalMessage(
+        isLocalPage()
+          ? 'Start npm run local in the tryon folder, then reconnect.'
+          : 'The image editor is unavailable. Please reconnect shortly.',
+      );
+    }
+  }
+  useEffect(() => {
+    const frame = requestAnimationFrame(() => {
+      void connectLocal();
+    });
+    return () => cancelAnimationFrame(frame);
   }, []);
   useEffect(() => {
     let instance: TryOnRenderer | null = null;
@@ -108,9 +137,9 @@ export default function Home() {
       landmarks.current = null;
       if (canvasRef.current)
         engine.current.draw(canvasRef.current, settings, false);
-      setBusy('Finding your face…');
+      setBusy('Checking placement…');
       try {
-        const faces = await detectFace(photo);
+        const faces = await detectJewelleryLandmarks(photo, settings.kind);
         if (ticket !== photoTicket.current) return;
         if (faces.length === 1) {
           landmarks.current = faces[0];
@@ -143,6 +172,37 @@ export default function Home() {
       setError(e instanceof Error ? e.message : 'Could not open that photo.');
     } finally {
       if (ticket === photoTicket.current) setBusy('');
+    }
+  }
+  async function changeKind(kind: Settings['kind']) {
+    setSelected(0);
+    landmarks.current = null;
+    update({
+      kind,
+      points: suggestPoints(null, kind),
+      size:
+        kind === 'ring'
+          ? 5
+          : kind === 'bracelet'
+            ? 16
+            : kind === 'necklace'
+              ? 30
+              : 14,
+    });
+    const photo = engine.current?.photo;
+    if (!photo) return;
+    setBusy('Checking placement…');
+    try {
+      const found = await detectJewelleryLandmarks(photo, kind);
+      landmarks.current = found.length === 1 ? found[0] : null;
+      setSettings((s) => ({
+        ...s,
+        points: suggestPoints(landmarks.current, kind),
+      }));
+    } catch {
+      landmarks.current = null;
+    } finally {
+      setBusy('');
     }
   }
   async function onModel(file?: File) {
@@ -181,7 +241,7 @@ export default function Home() {
   const generate = useCallback(async () => {
     if (!engine.current?.photo || !model || !canvasRef.current)
       throw new Error('Upload both a photo and a model first.');
-    setBusy('Generating your try-on…');
+    setBusy('Preparing placement guide…');
     setError('');
     setBefore(false);
     clearResult();
@@ -207,6 +267,36 @@ export default function Home() {
     }
     // eslint-disable-next-line react/react-compiler -- The external renderer consumes the complete settings object.
   }, [model, settings, clearResult]);
+  async function generateNatural() {
+    if (!engine.current?.photo || !model || busy) return;
+    setBusy('Preparing local edit…');
+    setError('');
+    clearResult();
+    setBefore(false);
+    try {
+      const data = await engine.current.localEditInputs(settings);
+      const job = await createLocalJob(data);
+      setJobId(job.id);
+      const blob = await pollLocalJob(job.id, setBusy);
+      resultRef.current = URL.createObjectURL(blob);
+      setResult(resultRef.current);
+      setNatural(true);
+      setGenerated(true);
+      setNotice(
+        'Local AI result is below the placement guide. Adjusting the fit clears the result.',
+      );
+      requestAnimationFrame(() =>
+        document
+          .getElementById('generated-result')
+          ?.scrollIntoView({ behavior: 'smooth', block: 'start' }),
+      );
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Local generation failed.');
+    } finally {
+      setBusy('');
+      setJobId('');
+    }
+  }
   // Optional WebMCP surface uses the same completed action as the visible button.
   const generateRef = useRef(generate);
   useEffect(() => {
@@ -260,130 +350,126 @@ export default function Home() {
     });
   }
   return (
-    <main>
-      <header>
-        <div className="brand">
-          ◈{' '}
-          <span>
-            ATELIER <small>TRY-ON STUDIO</small>
-          </span>
-        </div>
-        <span className="privacy">
-          <ShieldCheck size={16} /> Your files stay in your browser
-        </span>
-      </header>
-      <section className="intro">
-        <p className="eyebrow">YOUR JEWELLERY, ON YOU</p>
-        <h1>A little closer to the real thing.</h1>
-        <p>Upload a portrait and a 3D piece to create your personal try-on.</p>
+    <main className="steps-layout">
+      <section className="step-card step-wide" aria-label="Jewellery">
+        <h2>
+          <span>01</span> Jewellery
+        </h2>
+        <label className="upload">
+          <Box size={23} />
+          <strong>{model?.name || 'Choose a 3D model'}</strong>
+          <input
+            aria-label="Upload jewellery model"
+            disabled={uploadDisabled || cameraOpen}
+            type="file"
+            accept=".3dm,.glb,.stl"
+            onChange={(e) => {
+              void onModel(e.target.files?.[0]);
+              e.target.value = '';
+            }}
+          />
+        </label>
+        <label className="field">
+          Try-on type
+          <select
+            aria-label="Try-on type"
+            disabled={!!busy || cameraOpen}
+            value={settings.kind}
+            onChange={(e) =>
+              void changeKind(e.target.value as Settings['kind'])
+            }
+          >
+            <option value="ring">Ring</option>
+            <option value="earrings">Earring</option>
+            <option value="pendant">Pendant</option>
+            <option value="necklace">Necklace</option>
+            <option value="bracelet">Bracelet</option>
+          </select>
+        </label>
       </section>
-      <div className="workspace">
-        <aside className="panel">
+      <section className="step-card step-wide" aria-label="Photo">
+        <h2>
+          <span>02</span> Photo
+        </h2>
+        <label className="upload">
+          <ImagePlus size={23} />
+          <strong>{photoName || 'Choose a portrait'}</strong>
+          <input
+            aria-label="Upload portrait"
+            disabled={uploadDisabled || cameraOpen}
+            type="file"
+            accept="image/jpeg,image/png,image/webp"
+            onChange={(e) => {
+              void onPhoto(e.target.files?.[0]);
+              e.target.value = '';
+            }}
+          />
+        </label>
+        <button
+          className="camera-open"
+          disabled={uploadDisabled || cameraOpen}
+          onClick={() => setCameraOpen(true)}
+        >
+          Use camera
+        </button>
+        {cameraOpen && (
+          <CameraCapture
+            kind={settings.kind}
+            onClose={() => setCameraOpen(false)}
+            onCapture={(file) => {
+              setCameraOpen(false);
+              void onPhoto(file);
+            }}
+          />
+        )}
+      </section>
+      <section className="step-card step-wide" aria-label="Preview">
+        <div className="step-toolbar">
           <h2>
-            01 <span>Your photo</span>
-            {photoName && <Check className="complete" size={16} />}
+            <span>03</span> Preview
           </h2>
-          <label className="upload">
-            <ImagePlus size={23} />
-            <strong>{photoName || 'Choose a portrait'}</strong>
-            <input
-              aria-label="Upload portrait"
-              disabled={uploadDisabled}
-              type="file"
-              accept="image/jpeg,image/png,image/webp"
-              onChange={(e) => {
-                void onPhoto(e.target.files?.[0]);
-                e.target.value = '';
-              }}
-            />
-          </label>
-          <p className="hint">
-            JPG, PNG or WebP. Keep ears visible; include your neck and chest for
-            pendants.
-          </p>
-          <h2>
-            02 <span>Your jewellery</span>
-            {model && <Check className="complete" size={16} />}
-          </h2>
-          <label className="upload">
-            <Box size={23} />
-            <strong>{model?.name || 'Choose a 3D model'}</strong>
-            <input
-              aria-label="Upload jewellery model"
-              disabled={uploadDisabled}
-              type="file"
-              accept=".3dm,.glb,.stl"
-              onChange={(e) => {
-                void onModel(e.target.files?.[0]);
-                e.target.value = '';
-              }}
-            />
-          </label>
-          <p className="hint">
-            Rhino .3dm · GLB · STL · up to 80 MB
-            {model && (
-              <span className="model-info">
-                {model.meshes.toLocaleString()} meshes ·{' '}
-                {model.triangles.toLocaleString()} triangles
-              </span>
-            )}
-          </p>
-          <label className="field">
-            Try-on type
-            <select
-              aria-label="Try-on type"
-              disabled={!!busy}
-              value={settings.kind}
-              onChange={(e) => {
-                const kind = e.target.value as Settings['kind'];
-                setSelected(0);
-                update({
-                  kind,
-                  points: suggestPoints(landmarks.current, kind),
-                });
-              }}
-            >
-              <option value="earrings">Earrings — repeat one piece</option>
-              <option value="pendant">Pendant / necklace</option>
-              <option value="single">Single piece — manual placement</option>
-            </select>
-          </label>
           <button
-            className="primary"
-            disabled={!photoName || !model || !ready || !!busy}
+            disabled={!photoName || !model || !ready || !!busy || cameraOpen}
             onClick={() => void generate().catch((e) => setError(e.message))}
           >
-            {busy ? (
-              <>
-                <LoaderCircle size={17} className="spin" />
-                {busy}
-              </>
-            ) : (
-              <>
-                <span aria-hidden="true">✧</span>
-                {result ? 'Regenerate image' : 'Generate try-on'}
-              </>
-            )}
+            Preview placement
           </button>
-          <output className="status">
-            {busy ||
-              (photoName && model
-                ? 'Ready to fit your piece.'
-                : 'Add a photo and a model to begin.')}
-          </output>
-          {error && (
-            <p className="error" role="alert">
-              {error}
-            </p>
-          )}
           {generated && (
-            <section className="fitting">
-              <h2>
-                03 <span>Refine the fit</span>
-              </h2>
-              <div className="small-note">
-                <Move size={15} /> Select a point, then click the photo.
-              </div>
+            <button onClick={() => setBefore((v) => !v)}>
+              {before ? 'Show placement' : 'Show original'}
+            </button>
+          )}
+        </div>
+        <div className="preview-layout">
+          <div className="canvas-area" hidden={!photoName}>
+            <div className="canvas-wrap">
+              <canvas
+                ref={canvasRef}
+                aria-label="Interactive try-on preview"
+                onClick={(e) => {
+                  if (!generated || before || busy) return;
+                  const b = e.currentTarget.getBoundingClientRect();
+                  setPoint({
+                    x: Math.max(0, Math.min(1, (e.clientX - b.left) / b.width)),
+                    y: Math.max(0, Math.min(1, (e.clientY - b.top) / b.height)),
+                  });
+                }}
+              />
+              {generated &&
+                !before &&
+                settings.points.map((pt, i) => (
+                  <span
+                    key={i}
+                    className={`anchor ${selected === i ? 'selected' : ''}`}
+                    style={{ left: `${pt.x * 100}%`, top: `${pt.y * 100}%` }}
+                  >
+                    {i + 1}
+                  </span>
+                ))}
+            </div>
+          </div>
+          {generated && (
+            <fieldset className="fitting" disabled={!!busy}>
               <div className="segmented">
                 {settings.points.map((_, i) => (
                   <button
@@ -488,119 +574,74 @@ export default function Home() {
                 <RotateCcw size={14} />
                 Reset placement
               </button>
-            </section>
+            </fieldset>
           )}
-        </aside>
-        <section className="preview">
-          <div className="preview-top">
-            <h2>Your fitting room</h2>
-            {photoName ? (
-              <span className="face-status">
-                {faceStatus || 'PHOTO LOADED'}
-              </span>
-            ) : (
-              <span>PHOTO PREVIEW</span>
-            )}
-          </div>
-          {!photoName ? (
-            <div className="empty">
-              <span className="diamond">◇</span>
-              <h3>Make it yours.</h3>
-              <p>Your portrait and jewellery will appear here.</p>
-              <span className="empty-step">
-                <Upload size={16} /> Start with your photo
-              </span>
-            </div>
-          ) : null}
-          <div className="canvas-area" hidden={!photoName}>
-            <div className="canvas-wrap">
-              <canvas
-                ref={canvasRef}
-                aria-label="Interactive try-on preview"
-                onClick={(e) => {
-                  if (!generated || before || busy) return;
-                  const b = e.currentTarget.getBoundingClientRect();
-                  setPoint({
-                    x: Math.max(0, Math.min(1, (e.clientX - b.left) / b.width)),
-                    y: Math.max(0, Math.min(1, (e.clientY - b.top) / b.height)),
-                  });
-                }}
-              />
-              {generated &&
-                !before &&
-                settings.points.map((pt, i) => (
-                  <span
-                    key={i}
-                    className={`anchor ${selected === i ? 'selected' : ''}`}
-                    style={{ left: `${pt.x * 100}%`, top: `${pt.y * 100}%` }}
-                  >
-                    {i + 1}
-                  </span>
-                ))}
-            </div>
-          </div>
-          {photoName && (
-            <div className="preview-bottom">
-              <p>{notice || 'Your photo is ready.'}</p>
-              {generated && (
-                <button
-                  aria-pressed={before}
-                  onClick={() => setBefore((v) => !v)}
-                >
-                  {before ? 'Show try-on' : 'Show original'}
-                </button>
-              )}
-            </div>
+        </div>
+      </section>
+      <section
+        className="step-card step-wide"
+        aria-label="Try on"
+        id="generated-result"
+      >
+        <div className="step-toolbar">
+          <h2>
+            <span>04</span> Try on
+          </h2>
+          <button
+            className="natural-button"
+            disabled={!generated || !localReady || !!busy || cameraOpen}
+            onClick={() => void generateNatural()}
+          >
+            {jobId ? 'Generating…' : 'Generate try-on'}
+          </button>
+          {jobId && (
+            <button
+              onClick={() =>
+                void cancelLocalJob(jobId).catch((e) => setError(e.message))
+              }
+            >
+              Cancel generation
+            </button>
           )}
-          {generated && (
-            <div className="result">
-              <div>
-                <h3>{result ? 'Your image is ready' : 'Placement updated'}</h3>
-                <p>
-                  {result
-                    ? 'PNG export includes the jewellery, without placement markers.'
-                    : 'Generate again to save your latest adjustments.'}
-                </p>
-              </div>
-              {result ? (
-                <a
-                  className="download"
-                  href={result}
-                  download="atelier-try-on.png"
-                >
-                  <Download size={17} />
-                  Download PNG
-                </a>
-              ) : (
-                <button
-                  onClick={() =>
-                    void generate().catch((e) => setError(e.message))
-                  }
-                  disabled={!!busy}
-                >
-                  Generate updated image
-                </button>
-              )}
-              {result && (
-                // Local blob output must remain unoptimized; it is not a server image URL.
-                // eslint-disable-next-line @next/next/no-img-element
-                <img
-                  className="result-image"
-                  src={result}
-                  alt="Generated jewellery try-on"
-                />
-              )}
-            </div>
+          {!localReady && (
+            <button
+              disabled={!!busy}
+              title={localMessage}
+              onClick={() => void connectLocal()}
+            >
+              Reconnect editor
+            </button>
           )}
-          <p className="disclosure">
-            3D placement preview. Size is approximate; hair masking, realistic
-            chain drape and physical fit are not simulated.
+          {natural && result && (
+            <a
+              className="download"
+              href={result}
+              download="atelier-local-ai-try-on.png"
+            >
+              <Download size={17} /> Download PNG
+            </a>
+          )}
+        </div>
+        {busy && <output className="status">{busy}</output>}
+        {error && (
+          <p className="error" role="alert">
+            {error}
           </p>
-        </section>
-      </div>
+        )}
+        {natural &&
+          result && (
+            // eslint-disable-next-line @next/next/no-img-element
+            <img
+              className="result-image"
+              src={result}
+              alt="Locally generated natural jewellery try-on"
+            />
+          )}
+      </section>
     </main>
   );
 }
+
 function Range({
   label,
   value,

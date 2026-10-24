@@ -6,7 +6,7 @@ import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
 
 export type Point = { x: number; y: number };
 export type Settings = {
-  kind: 'earrings' | 'pendant' | 'single';
+  kind: 'earrings' | 'pendant' | 'necklace' | 'ring' | 'bracelet';
   points: Point[];
   size: number;
   rx: number;
@@ -268,13 +268,88 @@ export class TryOnRenderer {
       const center = bounds.getCenter(new THREE.Vector3());
       const anchor = new THREE.Group();
       anchor.add(orient);
-      orient.position.set(-center.x, -bounds.max.y, -center.z);
+      orient.position.set(
+        -center.x,
+        ['ring', 'bracelet', 'necklace'].includes(s.kind)
+          ? -center.y
+          : -bounds.max.y,
+        -center.z,
+      );
       anchor.scale.setScalar((h * s.size) / 100);
       anchor.position.set((p.x - 0.5) * w, (0.5 - p.y) * h, 0);
       this.group.add(anchor);
     }
     this.renderer.render(this.scene, this.camera);
     ctx.drawImage(this.renderer.domElement, 0, 0, w, h);
+  }
+  async localEditInputs(s: Settings) {
+    if (!this.photo || !this.model)
+      throw new Error('Upload a photo and model first.');
+    const photo = this.photo;
+    const guide = document.createElement('canvas');
+    this.draw(guide, s, true);
+    const regions = this.group.children.map((child) => {
+      const b = new THREE.Box3().setFromObject(child);
+      const padX = Math.max((b.max.x - b.min.x) * 0.18, photo.width * 0.012);
+      const padY = Math.max((b.max.y - b.min.y) * 0.16, photo.height * 0.018);
+      const x = Math.max(0, (b.min.x - padX) / photo.width + 0.5);
+      const y = Math.max(0, 0.5 - (b.max.y + padY) / photo.height);
+      const right = Math.min(1, (b.max.x + padX) / photo.width + 0.5);
+      const bottom = Math.min(1, 0.5 - (b.min.y - padY) / photo.height);
+      return [x, y, right - x, bottom - y];
+    });
+    if (regions.some((r) => r[2] <= 0 || r[3] <= 0))
+      throw new Error('Move the jewellery inside the photo before generating.');
+    const projectedSize = new THREE.Box3()
+      .setFromObject(this.group.children[0])
+      .getSize(new THREE.Vector3());
+    const referenceSize =
+      (76 * ((photo.height * s.size) / 100)) /
+      Math.max(projectedSize.x, projectedSize.y);
+    // Render the same CAD model separately to give the editor a clear product reference.
+    const backdrop = document.createElement('canvas');
+    backdrop.width = backdrop.height = 512;
+    const context = backdrop.getContext('2d')!;
+    context.fillStyle = '#eeeeea';
+    context.fillRect(0, 0, 512, 512);
+    const product = document.createElement('canvas');
+    try {
+      this.photo = backdrop;
+      this.draw(
+        product,
+        {
+          ...s,
+          kind: 'pendant',
+          points: [{ x: 0.5, y: 0.12 }],
+          size: referenceSize,
+        },
+        true,
+      );
+    } finally {
+      this.photo = photo;
+    }
+    const encode = (canvas: HTMLCanvasElement) =>
+      new Promise<Blob>((resolve, reject) =>
+        canvas.toBlob(
+          (blob) =>
+            blob ? resolve(blob) : reject(new Error('Image export failed.')),
+          'image/png',
+        ),
+      );
+    const blobs = await Promise.all([photo, guide, product].map(encode));
+    const data = new FormData();
+    ['photo', 'guide', 'product'].forEach((name, i) =>
+      data.append(name, blobs[i], `${name}.png`),
+    );
+    data.append(
+      'settings',
+      JSON.stringify({
+        kind: s.kind,
+        regions,
+        seed: Math.floor(Math.random() * 2147483647),
+      }),
+    );
+    return data;
   }
   dispose() {
     if (this.model) release(this.model);
